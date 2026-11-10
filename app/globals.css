@@ -1,1 +1,10 @@
 @import "tailwindcss";
+
+/* Classe responsável pelo destaque amarelado do trecho que está sendo lido */
+.trecho-leitura-ativo {
+  background-color: #fef08a !important; /* Amarelo (yellow-200) */
+  color: #1e293b !important;            /* Texto escuro (slate-800) */
+  border-radius: 4px;
+  padding: 2px 4px;
+  transition: background-color 0.2s ease;
+}

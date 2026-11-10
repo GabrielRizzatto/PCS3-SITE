@@ -8,7 +8,7 @@ export default function BotLeitura() {
   const [suporte, setSuporte] = useState(true);
   const pathname = usePathname();
 
-  const rotasPermitidas = ["/golpes", "/regra-tripla", "/ajuda"];
+  const rotasPermitidas = ["/", "/golpes", "/regra-tripla", "/ajuda"];
   const deveExibir = rotasPermitidas.some((rota) => pathname?.startsWith(rota));
 
   // Refs para controle seguro da fila de áudio sem depender de re-renders do React
@@ -17,6 +17,10 @@ export default function BotLeitura() {
   const isSpeakingRef = useRef(false);
   const isPausedRef = useRef(false);
   const utteranceRef = useRef(null);
+
+  // Refs para armazenar os elementos visuais e aplicar o destaque no DOM
+  const nosMapeadosRef = useRef([]);
+  const spanDestaqueRef = useRef(null);
 
   const obterVozPTBR = () => {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return null;
@@ -60,6 +64,42 @@ export default function BotLeitura() {
   useEffect(() => {
     pararLeitura();
   }, [pathname]);
+
+  // Remove a marcação amarela da tela e restaura a árvore DOM original
+  const limparDestaque = () => {
+    if (spanDestaqueRef.current) {
+      const parent = spanDestaqueRef.current.parentNode;
+      if (parent) {
+        while (spanDestaqueRef.current.firstChild) {
+          parent.insertBefore(spanDestaqueRef.current.firstChild, spanDestaqueRef.current);
+        }
+        parent.removeChild(spanDestaqueRef.current);
+        parent.normalize(); // Reúne nós de texto divididos pelo span
+      }
+      spanDestaqueRef.current = null;
+    }
+  };
+
+  // Aplica o destaque no bloco visual correspondente ao índice atual da leitura
+  const aplicarDestaque = (index) => {
+    limparDestaque();
+
+    const noTexto = nosMapeadosRef.current[index];
+    if (!noTexto || !noTexto.parentNode) return;
+
+    try {
+      const span = document.createElement("span");
+      span.className = "trecho-leitura-ativo";
+
+      noTexto.parentNode.insertBefore(span, noTexto);
+      span.appendChild(noTexto);
+      spanDestaqueRef.current = span;
+
+      span.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    } catch (e) {
+      console.warn("Erro ao aplicar destaque no DOM:", e);
+    }
+  };
 
   const limparSimbolos = (str) => {
     return str
@@ -146,11 +186,22 @@ export default function BotLeitura() {
     return chunks.filter((c) => c && c.trim().length > 0);
   };
 
-  const getTextoParaLer = () => {
-    const elementoPrincipal = document.querySelector("main") || document.body;
-    if (!elementoPrincipal) return "";
+  // --- FUNÇÃO ADAPTADA PARA SELEÇÃO DE TEXTO E MAPEAMENTO DE NÓS PARA DESTAQUE ---
+  const getTextoEMapearNos = () => {
+    if (typeof window === "undefined") return { chunks: [], nos: [] };
 
-    const clone = elementoPrincipal.cloneNode(true);
+    // 1. Tenta pegar a seleção ativa do usuário com o cursor
+    const selecao = window.getSelection()?.toString().trim();
+    if (selecao) {
+      const textoFormatado = formatarTextoParaVoz(selecao);
+      const chunks = dividirTextoEmChunks(textoFormatado);
+      // Ao ler seleção manual, o destaque não é aplicado nos nós do DOM para evitar conflitos com a seleção do mouse
+      return { chunks, nos: [] };
+    }
+
+    // 2. Fallback: Se NADA estiver selecionado, lê o conteúdo da página mapeando os nós visíveis
+    const elementoPrincipal = document.querySelector("main") || document.body;
+    if (!elementoPrincipal) return { chunks: [], nos: [] };
 
     const seletoresParaIgnorar = [
       "button",
@@ -179,34 +230,32 @@ export default function BotLeitura() {
       ".leitura-ignorar",
     ];
 
-    clone.querySelectorAll(seletoresParaIgnorar.join(", ")).forEach((el) => {
-      el.remove();
+    const walker = document.createTreeWalker(elementoPrincipal, NodeFilter.SHOW_TEXT, {
+      acceptNode(node) {
+        if (!node.textContent.trim()) return NodeFilter.FILTER_REJECT;
+        if (node.parentElement && node.parentElement.closest(seletoresParaIgnorar.join(", "))) {
+          return NodeFilter.FILTER_REJECT;
+        }
+        return NodeFilter.FILTER_ACCEPT;
+      },
     });
 
-    // Garante que elementos de bloco tenham quebra de linha para o textContent não grudar palavras
-    const tagsDeBloco = [
-      "p",
-      "h1",
-      "h2",
-      "h3",
-      "h4",
-      "h5",
-      "h6",
-      "li",
-      "article",
-      "section",
-      "div",
-    ];
-    clone.querySelectorAll(tagsDeBloco.join(", ")).forEach((el) => {
-      el.append(" \n");
-    });
+    const chunks = [];
+    const nos = [];
+    let noAtual;
 
-    clone.querySelectorAll("br").forEach((br) => {
-      br.replaceWith(" \n");
-    });
+    while ((noAtual = walker.nextNode())) {
+      const textoLimpo = limparSimbolos(noAtual.textContent).trim();
+      if (textoLimpo && /[a-zA-Z0-9À-ÿ]/.test(textoLimpo)) {
+        const terminaComPontuacao = /[.!?:;,—–-]$/.test(textoLimpo);
+        const textoFormatado = terminaComPontuacao ? textoLimpo : `${textoLimpo}.`;
+        
+        chunks.push(textoFormatado);
+        nos.push(noAtual);
+      }
+    }
 
-    const textoBruto = clone.textContent || "";
-    return formatarTextoParaVoz(textoBruto);
+    return { chunks, nos };
   };
 
   const tocarChunk = (index) => {
@@ -227,6 +276,9 @@ export default function BotLeitura() {
       tocarChunk(index + 1);
       return;
     }
+
+    // Aplica o destaque amarelado no nó visual atual
+    aplicarDestaque(index);
 
     const utterance = new SpeechSynthesisUtterance(chunkTexto);
     utterance.rate = 0.95;
@@ -273,7 +325,7 @@ export default function BotLeitura() {
     if (typeof window === "undefined" || !("speechSynthesis" in window)) return;
 
     // Se estava pausado, retoma da exata frase onde parou
-    if (isPaused) {
+    if (isPausedRef.current && chunksRef.current.length > 0) {
       isPausedRef.current = false;
       isSpeakingRef.current = true;
       setIsPaused(false);
@@ -283,15 +335,13 @@ export default function BotLeitura() {
     }
 
     // Início do zero
-    const textoFormatado = getTextoParaLer();
-    if (!textoFormatado) return;
-
-    const chunks = dividirTextoEmChunks(textoFormatado);
+    const { chunks, nos } = getTextoEMapearNos();
     if (chunks.length === 0) return;
 
     window.speechSynthesis.cancel();
 
     chunksRef.current = chunks;
+    nosMapeadosRef.current = nos;
     currentIndexRef.current = 0;
     isPausedRef.current = false;
     isSpeakingRef.current = true;
@@ -319,6 +369,10 @@ export default function BotLeitura() {
     isPausedRef.current = false;
     currentIndexRef.current = 0;
     chunksRef.current = [];
+    nosMapeadosRef.current = [];
+    
+    // Remove qualquer destaque residual da tela
+    limparDestaque();
 
     if (typeof window !== "undefined" && "speechSynthesis" in window) {
       window.speechSynthesis.cancel();
